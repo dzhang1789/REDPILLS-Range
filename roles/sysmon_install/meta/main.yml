@@ -1,0 +1,9 @@
+galaxy_info:
+  role_name: sysmon_install
+  author: dzhang17
+  description: Installs Sysmon with sysmon-modular config
+  platforms:
+    - name: Windows
+      versions:
+        - all
+dependencies: []

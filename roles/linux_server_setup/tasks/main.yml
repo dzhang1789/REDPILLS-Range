@@ -1,0 +1,21 @@
+- name: Install Docker and dependencies
+  apt:
+    name:
+      - docker.io
+      - docker-compose
+      - apparmor
+      - apparmor-utils
+      - curl
+    state: present
+    update_cache: true
+
+- name: Enable Docker
+  systemd:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Restart Docker (ensures AppArmor profile loads cleanly)
+  systemd:
+    name: docker
+    state: restarted

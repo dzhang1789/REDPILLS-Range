@@ -1,0 +1,74 @@
+- name: Install AppArmor first (docker.io's postinst needs apparmor_parser present)
+  apt:
+    name:
+      - apparmor
+      - apparmor-utils
+    state: present
+    update_cache: true
+
+- name: Ensure AppArmor service is running
+  systemd:
+    name: apparmor
+    state: started
+    enabled: true
+
+- name: Install Docker and remaining dependencies
+  apt:
+    name:
+      - docker.io
+      - docker-compose
+      - git
+      - curl
+      - python3
+      - python3-pip
+    state: present
+
+- name: Enable Docker
+  systemd:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Restart Docker (picks up AppArmor cleanly now that it's actually running)
+  systemd:
+    name: docker
+    state: restarted
+
+# ---------------------------------------------------------------------------
+# Pre-stage Vulhub for scenario_gen.py's per-episode CVE containers
+# ---------------------------------------------------------------------------
+# The plant VLAN (30) has NO internet egress once the range's final
+# network-policy deploy locks it down -- confirmed live (apt and a direct
+# `curl https://github.com` both get connection-refused from pla01), and
+# that isolation is deliberate per the bailey spec's policy block ("the
+# real range declares no outbound rules at all" for plant). So the Vulhub
+# repo has to be cloned HERE, during provisioning, while egress is still
+# open -- not per-episode by scenario_gen.py's generated playbook, which
+# can no longer reach github.com by the time it runs. scenario_gen.py only
+# decides, per seed, which already-present CVE directory's docker-compose
+# to start -- that's still fully random; only the one-time clone moved.
+# (Mirrors the same addition in eng_hmi_ot/tasks/main.yml.)
+- name: Clone Vulhub (pre-staged -- plant VLAN has no egress after deploy)
+  git:
+    repo: https://github.com/vulhub/vulhub
+    dest: /opt/vulhub
+    depth: 1
+    update: true
+
+# Cloning the repo isn't enough on its own -- `docker-compose up -d` still
+# has to pull each CVE's image from Docker Hub the first time it runs, and
+# that pull is itself an egress call that fails post-lockdown exactly like
+# the git clone used to ("dial tcp ...: connect: connection refused" to
+# registry-1.docker.io instead of github.com -- confirmed live 2026-10-31).
+# Which CVE lands on this host is random per episode seed, so pre-pull every
+# image in scenario_gen.py's CVE_POOL here rather than guessing which one;
+# there are only 3 right now. `docker-compose pull` fetches the image
+# without starting the container, so this doesn't leave anything running.
+- name: Pre-pull Vulhub CVE images (same egress-timing reason as the clone above)
+  shell: docker-compose -f /opt/vulhub/{{ item }}/docker-compose.yml pull
+  args:
+    chdir: "/opt/vulhub/{{ item }}"
+  loop:
+    - geoserver/CVE-2024-36401
+    - langflow/CVE-2025-3248
+    - activemq/CVE-2026-34197

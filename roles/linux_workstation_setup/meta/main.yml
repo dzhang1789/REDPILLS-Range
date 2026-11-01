@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: linux_workstation_setup
+  author: daniel
+  description: Base Linux workstation setup with Docker and git for CVE containers
+  min_ansible_version: "2.10"
+dependencies: []

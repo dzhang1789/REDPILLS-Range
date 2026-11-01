@@ -1,0 +1,238 @@
+# =============================================================================
+# goad-daniel — a preliminary GOAD-shaped range spec with CASTLE mods
+# =============================================================================
+# The range: three GOAD domain controllers and their member servers on one AD
+# VLAN with the attacker beside them, a single jump host on its own segment,
+# a plant of OT devices reachable only through that jump host, and a build
+# server that reaches the plant over SSH and nothing else.
+#
+# THE PIVOT IS FORCED BY THE ABSENCE OF AN EDGE, NOT BY A DUAL-HOMED HOST.
+# `policy:` is an allow-list over deny-all, so there is no `ad -> plant` entry
+# and that is the whole statement: the only way from the enterprise side into
+# the plant is `entry -> plant`. Adding an `ad -> plant` edge would silently
+# remove the exercise this range exists for.
+#
+# WHAT IS FIXED AND WHAT IS DRAWN
+#
+# Fixed: the forest, the four segments and their VLANs, the forced-pivot
+# topology, and eight hostnames — GOAD's five, plus `dragonstone`, `eng-hmi`
+# and `jenkins`, which the real range names and the attack chain addresses.
+# Drawn: how many member servers the `ad` segment carries, how many further OT
+# devices the plant carries, the hostnames of every host not pinned, and which
+# role each host takes from its kind's pool — `eng-hmi` included, so the plant
+# device has a stable name and a drawn load-out.
+#
+# So this spec names a FAMILY of ranges, of 11 to 13 hosts:
+#
+#   ad     3 DCs + 2 pinned servers + [0, 1] drawn + 1 attacker
+#          + dragonstone                                        = 7-8
+#   entry  1
+#   plant  eng-hmi + [1, 2] drawn                               = 2-3
+#   build  jenkins                                              = 1
+#
+# Nothing should assert a fixed host count against it — assert the range and
+# the structure. Widening either count range widens the family and needs no
+# change to bailey; the drawn remainder on `ad` stays [0, 1] because seven to
+# eight Windows guests is already a heavy deploy.
+#
+# THE PINNED HOSTNAMES ARE NOT DECORATION.
+#
+# `content: goad` installs the GOAD collection, whose content looks its hosts
+# up BY HOSTNAME rather than by domain — the `ad-dc`, `ad-cs` and `mssql`
+# fragments all do (see the goad pack in render/ludus/catalog.yml). So GOAD's
+# content depends on GOAD's hostnames, and a spec that lets them be drawn
+# deploys clean and then fails inside the collection. They are pinned here,
+# next to the domains they belong to, where an author changing one can see the
+# other.
+#
+# `content: goad` also requires exactly the three domains below, which the pack
+# enforces with a render-time refusal. A range with domains of its own wants
+# `content: random`, which has no hostname dependency at all. Development
+# of additional content packs better-aligned with bailey's objectives is a TODO.
+#
+# =============================================================================
+
+shape: goad-daniel
+seed: 20260911
+
+content: goad
+
+forest:
+  roots:
+    # The trust is written from one side only. It is bidirectional either way.
+    - fqdn: sevenkingdoms.local
+      children: [north.sevenkingdoms.local]
+      trusts_to: [essos.local]
+    - fqdn: essos.local
+
+segments:
+  - id: ad
+    vlan: 10
+    label: AD
+    groups:
+      # One controller per domain. The model permits exactly one, so each of
+      # these is a singleton with no `count:` at all.
+      - {kind: dc, domain: sevenkingdoms.local, domain_role: dc, hostname: kingslanding}
+      - {kind: dc, domain: north.sevenkingdoms.local, domain_role: dc, hostname: winterfell}
+      - {kind: dc, domain: essos.local, domain_role: dc, hostname: meereen}
+      - {kind: dc, domain: essos.local, domain_role: replica_dc, hostname: volantis}
+
+      # GOAD'S TWO MEMBER SERVERS, WITH THEIR ROLES PINNED AND NOT DRAWN.
+      #
+      # `content: goad` keys its content by HOSTNAME, and GOAD's blueprint
+      # fixes which host is which: ADCS lives on braavos, and the goad pack
+      # shares that host's `CertEnroll` directory. Drawing the role from the
+      # `server` pool [ad-cs, mssql, file-share] puts ADCS somewhere else two
+      # seeds out of three and then fails the deploy on braavos with
+      # "C:\Windows\system32\CertSrv\CertEnroll directory does not exist" —
+      # observed on a live range 2026-09-14, where the draw had given
+      # castelblack ad-cs and braavos file-share.
+      #
+      # So these two follow GOAD rather than the draw, matching the real
+      # range: braavos runs ADCS and MSSQL, castelblack runs IIS/WebDAV and
+      # MSSQL. Randomization applies to the hosts this scenario does NOT fix —
+      # the drawn remainder below, the plant, and every segment beyond the base
+      # shape. Fully randomizing an AD forest is future work.
+      - {kind: server, domain: north.sevenkingdoms.local, hostname: castelblack, role: mssql}
+      - {kind: server, domain: essos.local, hostname: braavos, role: ad-cs}
+
+      # The drawn remainder. `round_robin` spreads these over the declared
+      # domains in creation order, counting across the whole range rather than
+      # restarting per group.
+      #
+      # FEATURES ARE COMMENTED OUT DELIBERATELY. The shipped catalog declares
+      # no `features:` block at all, and a spec naming a feature the catalog
+      # does not answer for is refused at render — so this is live the day an
+      # operator declares a bundle of their own, and until then it would only
+      # make this spec unrenderable.
+      #
+      #   features:
+      #     cve-2024-1234: [0, 1]
+      - kind: server
+        domain: round_robin
+        count: [0, 1]
+
+      # Kali on the AD VLAN, beside the controllers, rather than on a segment
+      # of its own. Nothing in the model privileges an attacker segment, which
+      # is what makes this expressible.
+      - {kind: attacker}
+
+      # `dragonstone` — the phishing foothold, and the reason this segment
+      # carries a Windows CLIENT and not only servers. The real range puts a
+      # Win11 desktop here as the machine a dropper lands on, with kali on the
+      # same VLAN so the callback needs no inter-VLAN rule at all.
+      #
+      # `workstation` is the nearest kind. It draws the catalog's
+      # `windows-desktop` template, which is win10 rather than the win11 the
+      # real range runs; the kind is right and the template alias is the thing
+      # to change if the version matters.
+      - {kind: workstation, domain: essos.local, hostname: dragonstone, octet: 11}
+      - {kind: server, domain: sevenkingdoms.local, hostname: adcs-sk, role: ad-cs}
+
+  - id: entry
+    vlan: 20
+    label: Entry
+    groups:
+      # The jump host, pinned at three of the four levels the grammar offers:
+      # `tags:` is how an agent finds it in the topology artifact, `hostname:`
+      # fixes the name, and the segment it is written under fixes its
+      # placement. `name:` is a fourth thing and not one of the levels — it is
+      # the handle a `policy:` edge would address this host by, which nothing
+      # here needs.
+      #
+      # The level NOT taken is `octet:`, which would fix the address as well.
+      # It is left drawn on purpose: an agent reads the address out of the
+      # topology artifact, so pinning it buys nothing here and pinning an
+      # address is the one of the four that can collide with another group's.
+      - kind: workstation
+        domain: essos.local
+        name: jump
+        hostname: eng-jump
+        tags: [jump]
+
+  - id: plant
+    vlan: 30
+    label: Plant
+    groups:
+      # `eng-hmi` is pinned because the attack chain names it: the build host
+      # reaches it by SSH, and a drawn `pla01` would make that grant address a
+      # hostname nobody wrote. The ROLE is still drawn from the ot-device pool
+      # (ot-hmi, ot-historian, ot-plc), which is the randomization this range
+      # wants — the name is what has to be stable, not the software on it.
+      - {kind: ot-device, hostname: eng-hmi}
+
+      # The rest of the plant, drawn. A second device is what lets the
+      # isolation plan take an intra-segment control on this segment.
+      - {kind: ot-device, count: [1, 2]}
+
+  - id: build
+    vlan: 99
+    label: Build
+    groups:
+      # `jenkins` is pinned for the same reason as eng-hmi: it is the host the
+      # scenario playbook runs from, and three policy grants below are written
+      # against this segment because of what this machine does.
+      - {kind: linux-server, hostname: jenkins}
+
+  - id: dept
+    # A FAN-OUT: this one definition stands for 1..3 further departments, drawn.
+    # Their ids are dept-01, dept-02, … and each draws its own host count, so
+    # two departments in one range are different sizes.
+    #
+    # A `count:` of one would still give `dept-01` rather than `dept`. A
+    # definition is a fan-out because it carries `count:`, never because of what
+    # the number resolved to — otherwise one seed would produce `dept` and the
+    # next `dept-01`, and the `policy:` edges naming `dept` below would work on
+    # some seeds only.
+    count: [1, 3]
+    vlan: {base: 80, step: 1}
+    label_pool: [HR, Finance, Legal, Sales]
+    groups:
+      - {kind: workstation, domain: round_robin, count: [1, 3]}
+
+# An allow-list over deny-all: every path absent from this list is one an
+# isolation run must prove unreachable.
+policy:
+  - {from: {segment: ad}, to: {segment: entry}}
+  - {from: {segment: entry}, to: {segment: ad}}
+
+  # The only way into the plant. The real range writes this rule with the
+  # comment "the ONLY path into OT", which is the exercise stated in its own
+  # words — and it is carried here by the ABSENCE of an `ad -> plant` edge
+  # rather than by anything written.
+  - {from: {segment: entry}, to: {segment: plant}}
+
+  # SSH from the build segment and nothing else. Port scoping is
+  # segment-to-segment only, which this is.
+  - {from: {segment: build}, to: {segment: plant}, protocol: tcp, ports: 22}
+
+  # WinRM from the build host, so the scenario playbook can drive the Windows
+  # side from jenkins. Two grants and not one: the AD VLAN and the jump host
+  # are separate segments here, and the real range writes both.
+  - {from: {segment: build}, to: {segment: ad}, protocol: tcp, ports: 5985}
+  - {from: {segment: build}, to: {segment: entry}, protocol: tcp, ports: 5985}
+
+  # The implant callback, recorded rather than required: `entry -> ad` above
+  # already permits every port, so this line grants nothing. It is here because
+  # the real range carries it, and because what a range is FOR is worth having
+  # in the file that describes it.
+  #
+  # `bailey gen` says so too — it prints a NOTICE naming this line and the wide
+  # edge that subsumes it, and accepts the spec. It used to refuse it.
+  - {from: {segment: entry}, to: {segment: ad}, protocol: tcp, ports: 8444}
+
+  # These two name the DEFINITION `dept`, and each expands to one edge per
+  # drawn instance. An instance id cannot be written here: how many there are
+  # is not known until the draw.
+  - {from: {segment: ad}, to: {segment: dept}}
+  - {from: {segment: dept}, to: {segment: ad}}
+
+  # EGRESS IS EXPLICIT. The real range declares no outbound rules at all.
+  # Bailey pushes two specs during commissioning. The first has a permissive
+  # egress policy, required because range provisioning requires internet access.
+  # The second is pushed after provisioning completes, restricting egress except
+  # as explicitly permitted here. The final step in commissioning attempts to
+  # assert that this policy is measurably enforced.
+  - {from: {segment: ad}, to: {external: true}}
+  - {from: {segment: build}, to: {external: true}}
+  - {from: {segment: dept}, to: {external: true}}

@@ -1,0 +1,272 @@
+---
+# eng_hmi_ot — provisions the OT target on eng-hmi (VLAN 30)
+#
+# What this deploys:
+#   - Docker + docker compose
+#   - ScadaLTS + MySQL (docker-compose.yml from upstream)
+#   - PLC simulator (4 Modbus TCP servers, ports 502-505)
+#   - SCADA gateway simulator (port 5020)
+#   - Attack + detection scripts with dev-range.env
+#   - Snapshot-friendly: all services launched via systemd so they
+#     survive a with-RAM snapshot restore cleanly
+
+# ---------------------------------------------------------------------------
+# 0. Authorize the Jenkins collector's SSH key
+# ---------------------------------------------------------------------------
+# Without this, eng-hmi trusts no key after a fresh deploy and "Collect OT
+# artifacts" falls back to -- or outright fails without -- password auth.
+# This key is public; it has no access value on its own without the
+# matching private half, which lives only in the Jenkins credential store
+# (enghmi-ssh-key).
+- name: Ensure .ssh directory exists
+  file:
+    path: /home/debian/.ssh
+    state: directory
+    mode: "0700"
+    owner: debian
+    group: debian
+
+- name: Authorize Jenkins SSH key for OT artifact collection
+  lineinfile:
+    path: /home/debian/.ssh/authorized_keys
+    line: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE9tC9He/VCSJ0PGCdFivmuCxOqgNGs2VGDkVcnCAmn4 jenkins@ranger"
+    create: yes
+    mode: "0600"
+    owner: debian
+    group: debian
+    state: present
+
+# ---------------------------------------------------------------------------
+# 1. System packages
+# ---------------------------------------------------------------------------
+- name: Install AppArmor first (docker.io's postinst needs apparmor_parser present)
+  apt:
+    name:
+      - apparmor
+      - apparmor-utils
+    state: present
+    update_cache: true
+
+- name: Ensure AppArmor service is running
+  systemd:
+    name: apparmor
+    state: started
+    enabled: true
+
+- name: Install remaining prerequisites
+  apt:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+      - git
+      - curl
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - docker.io
+      - docker-compose
+    state: present
+
+- name: Enable and start Docker
+  systemd:
+    name: docker
+    state: started
+    enabled: true
+
+# ---------------------------------------------------------------------------
+# 1b. Pre-stage Vulhub for scenario_gen.py's per-episode CVE containers
+# ---------------------------------------------------------------------------
+# The plant VLAN (30) has NO internet egress once the range's final
+# network-policy deploy locks it down -- confirmed live (apt and a direct
+# `curl https://github.com` both get connection-refused from pla01), and
+# that isolation is deliberate per the bailey spec's policy block ("the
+# real range declares no outbound rules at all" for plant). So the Vulhub
+# repo has to be cloned HERE, during provisioning, while egress is still
+# open -- not per-episode by scenario_gen.py's generated playbook, which
+# can no longer reach github.com by the time it runs. scenario_gen.py only
+# decides, per seed, which already-present CVE directory's docker-compose
+# to start -- that's still fully random; only the one-time clone moved.
+- name: Clone Vulhub (pre-staged -- plant VLAN has no egress after deploy)
+  git:
+    repo: https://github.com/vulhub/vulhub
+    dest: /opt/vulhub
+    depth: 1
+    update: true
+
+# Cloning the repo isn't enough on its own -- `docker-compose up -d` still
+# has to pull each CVE's image from Docker Hub the first time it runs, and
+# that pull is itself an egress call that fails post-lockdown exactly like
+# the git clone used to ("dial tcp ...: connect: connection refused" to
+# registry-1.docker.io instead of github.com -- confirmed live 2026-10-31).
+# Which CVE lands on this host is random per episode seed, so pre-pull every
+# image in scenario_gen.py's CVE_POOL here rather than guessing which one;
+# there are only 3 right now. `docker-compose pull` fetches the image
+# without starting the container, so this doesn't leave anything running.
+# (Mirrors the same addition in linux_workstation_setup/tasks/main.yml.)
+- name: Pre-pull Vulhub CVE images (same egress-timing reason as the clone above)
+  shell: docker-compose -f /opt/vulhub/{{ item }}/docker-compose.yml pull
+  args:
+    chdir: "/opt/vulhub/{{ item }}"
+  loop:
+    - geoserver/CVE-2024-36401
+    - langflow/CVE-2025-3248
+    - activemq/CVE-2026-34197
+
+# ---------------------------------------------------------------------------
+# 2. Python venv for simulators and scripts
+# ---------------------------------------------------------------------------
+- name: Create venv at /opt/pulse/venv
+  command: python3 -m venv /opt/pulse/venv
+  args:
+    creates: /opt/pulse/venv/bin/activate
+
+- name: Install Python deps into venv
+  pip:
+    name:
+      - pymodbus==3.7.4
+      - requests
+      - mysql-connector-python
+    virtualenv: /opt/pulse/venv
+    state: present
+
+# ---------------------------------------------------------------------------
+# 3. Deploy directory layout
+# ---------------------------------------------------------------------------
+- name: Create /opt/pulse tree
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/pulse
+    - /opt/pulse/attacks
+    - /opt/pulse/detection
+    - /opt/pulse/deployment
+    - /opt/pulse/docker
+
+# ---------------------------------------------------------------------------
+# 4. Docker compose (ScadaLTS + MySQL)
+# ---------------------------------------------------------------------------
+- name: Copy docker-compose.yml
+  copy:
+    src: docker-compose.yml
+    dest: /opt/pulse/docker/docker-compose.yml
+    mode: "0644"
+
+- name: Start ScadaLTS stack
+  shell: docker-compose -f /opt/pulse/docker/docker-compose.yml up -d
+  args:
+    chdir: /opt/pulse/docker
+  # First boot only: ScadaLTS takes ~2 min to initialise; subsequent
+  # snapshot restores bring the containers back live instantly.
+
+# ---------------------------------------------------------------------------
+# 5. PLC + gateway simulators
+# ---------------------------------------------------------------------------
+- name: Copy plc_simulator.py
+  copy:
+    src: plc_simulator.py
+    dest: /opt/pulse/plc_simulator.py
+    mode: "0755"
+
+- name: Copy gateway_simulator.py
+  copy:
+    src: gateway_simulator.py
+    dest: /opt/pulse/gateway_simulator.py
+    mode: "0755"
+
+# Systemd unit — PLC simulator
+- name: Install plc-simulator systemd unit
+  copy:
+    dest: /etc/systemd/system/plc-simulator.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=PULSE PLC simulator (MG1-4)
+      After=network.target
+
+      [Service]
+      ExecStart=/opt/pulse/venv/bin/python /opt/pulse/plc_simulator.py
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Install gateway-simulator systemd unit
+  copy:
+    dest: /etc/systemd/system/gateway-simulator.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=PULSE SCADA gateway simulator
+      After=network.target
+
+      [Service]
+      ExecStart=/opt/pulse/venv/bin/python /opt/pulse/gateway_simulator.py
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Enable and start simulators
+  systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  loop:
+    - plc-simulator
+    - gateway-simulator
+
+# ---------------------------------------------------------------------------
+# 6. Attack + detection scripts
+# ---------------------------------------------------------------------------
+- name: Copy attack scripts
+  copy:
+    src: "attacks/"
+    dest: /opt/pulse/attacks/
+    mode: "0755"
+
+- name: Copy detection scripts
+  copy:
+    src: "detection/"
+    dest: /opt/pulse/detection/
+    mode: "0755"
+
+- name: Copy env_loader.py (shared helper)
+  copy:
+    src: env_loader.py
+    dest: /opt/pulse/env_loader.py
+    mode: "0644"
+
+- name: Copy dev-range.env
+  copy:
+    src: dev-range.env
+    dest: /opt/pulse/deployment/dev-range.env
+    mode: "0644"
+
+# ---------------------------------------------------------------------------
+# 7. Smoke test — confirm all ports are listening
+# ---------------------------------------------------------------------------
+- name: Wait for PLC ports (502-505)
+  wait_for:
+    port: "{{ item }}"
+    host: 127.0.0.1
+    timeout: 30
+  loop: [502, 503, 504, 505]
+
+- name: Wait for gateway port (5020)
+  wait_for:
+    port: 5020
+    host: 127.0.0.1
+    timeout: 30
+
+- name: Wait for ScadaLTS (8080)
+  wait_for:
+    port: 8080
+    host: 127.0.0.1
+    timeout: 180
+    # ScadaLTS takes ~2 min on first cold start; instant on snapshot restore

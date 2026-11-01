@@ -1,0 +1,62 @@
+version: '3.8'
+services:
+  database:
+    image: mysql:8.0.32
+    container_name: scada_database
+    command: --log_bin_trust_function_creators=1
+    security_opt:
+      - apparmor:unconfined
+    environment:
+    - MYSQL_ROOT_PASSWORD=root
+    - MYSQL_DATABASE=scadalts
+    volumes:
+    - scada_mysql_data:/var/lib/mysql
+    networks:
+    - powergrid_net
+    healthcheck:
+      test:
+      - CMD
+      - mysqladmin
+      - ping
+      - -h
+      - localhost
+      - -u
+      - root
+      - -proot
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+  scadalts:
+    image: scadalts/scadalts:latest
+    container_name: scadalts
+    security_opt:
+      - apparmor:unconfined
+    ports:
+    - 8080:8080
+    networks:
+    - powergrid_net
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+    - CATALINA_OPTS=-Xmx512m
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8080/Scada-LTS/
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+    volumes:
+    - /opt/powergrid/tomcat-logs:/usr/local/tomcat/logs
+networks:
+  powergrid_net:
+    driver: bridge
+volumes:
+  scada_mysql_data: {}

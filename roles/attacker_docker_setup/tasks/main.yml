@@ -1,0 +1,67 @@
+# attacker_docker_setup — installs Docker on the attacker (Kali) host at
+# provisioning time, so the ImpactAgent's `docker compose up redpills --build`
+# step (run by Jenkins over a non-interactive SSH session as the `kali`
+# user) doesn't fail with "command not found" or need sudo/a password.
+#
+# Confirmed live 2026-11-01: a freshly reset range's ad02 had NO docker
+# binary anywhere (`which docker`, and the common fallback install paths,
+# all came back empty) -- the catalog's attacker: role entry had
+# `ludus_roles: []`, so nothing ever installed it. This role is that
+# missing piece.
+
+- name: Install AppArmor first (docker.io's postinst needs apparmor_parser present)
+  apt:
+    name:
+      - apparmor
+      - apparmor-utils
+    state: present
+    update_cache: true
+
+- name: Ensure AppArmor service is running
+  systemd:
+    name: apparmor
+    state: started
+    enabled: true
+
+- name: Install Docker and compose plugin
+  apt:
+    name:
+      - docker.io
+      # NOT docker-compose-v2 or docker-compose-plugin -- neither exists in
+      # Kali's repo. Kali packages the modern Go-based v2 rewrite under the
+      # old plain name `docker-compose` (confirmed live 2026-11-01:
+      # `apt-cache search docker-compose` -> "docker-compose/kali-rolling
+      # 2.40.3-3 amd64"; after install, `docker compose version` -- no
+      # hyphen, the v2 plugin syntax this role and the Jenkinsfile both
+      # need -- answered "Docker Compose version 2.40.3-3").
+      - docker-compose
+      - curl
+    state: present
+
+- name: Enable Docker
+  systemd:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Restart Docker (picks up AppArmor cleanly now that it's actually running)
+  systemd:
+    name: docker
+    state: restarted
+
+# Without this, every `docker`/`docker compose` command over a non-root SSH
+# session (exactly how Jenkins runs it) needs sudo -- and the Jenkinsfile's
+# non-interactive `ssh ... 'docker compose up ...'` has no way to supply a
+# sudo password. Group membership takes effect on next login, which is fine
+# here since Jenkins always opens a fresh SSH session, never reuses this
+# provisioning-time one.
+- name: Add kali user to the docker group (passwordless docker for SSH sessions)
+  user:
+    name: kali
+    groups: docker
+    append: true
+
+- name: Confirm docker compose plugin is callable
+  command: docker compose version
+  register: _docker_compose_check
+  changed_when: false

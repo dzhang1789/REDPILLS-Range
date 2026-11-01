@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: linux_server_setup
+  author: daniel
+  description: Base Linux server setup with Docker for jenkins and similar hosts
+  min_ansible_version: "2.10"
+dependencies: []

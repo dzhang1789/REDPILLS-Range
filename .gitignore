@@ -1,0 +1,68 @@
+# =============================================================================
+# REDPILLS-range .gitignore
+# =============================================================================
+# Grouped by WHY each pattern is excluded, not just what it matches, so this
+# still makes sense to whoever edits it next without re-deriving the reasoning.
+
+# -----------------------------------------------------------------------------
+# Runtime output -- written fresh by every episode run, never hand-edited.
+# Tracking it means noisy commits on every run and nothing meaningful to diff.
+# -----------------------------------------------------------------------------
+artifacts/
+
+# -----------------------------------------------------------------------------
+# Bailey/scenario_gen generated renders -- reproducible on demand from the
+# catalog/spec (bailey) or from the current range config (scenario_gen.py).
+# Each one embeds a hash/seed of what it was generated from and goes stale the
+# moment that source changes -- committing it creates a second source of truth
+# that silently drifts, which is exactly what caused this session's stale-file
+# bugs (the sysmon_install catalog conflict, the "wq" leftover in a compose
+# file nobody meant to commit). Confirmed generated, not hand-authored:
+#   - goad-daniel-bailey.yml: bailey's own "GENERATED FILE" header + spec hash
+#   - scenario.yml: scenario_gen.py's own docstring names this as its output
+#   - topology*.yml: bailey `gen`'s topology output (decided not useful to
+#     keep for this project -- drop both the dated and undated copies)
+# -----------------------------------------------------------------------------
+goad-daniel-bailey.yml
+scenario.yml
+topology.yml
+topology.*.yml
+range-config.*.yml
+
+# -----------------------------------------------------------------------------
+# Pre-bailey legacy configs -- hand-authored before the catalog/spec/generator
+# system existed (confirmed against an August chat where this content was
+# built by hand: eng-jump pivot, eng-hmi, the VLAN 10->20->30 network rules).
+# Superseded by bailey's catalog + spec. Keep a copy in archive/ outside the
+# active config path if you want the history; don't track at the repo root.
+# -----------------------------------------------------------------------------
+goad-daniel-range.yml
+goad-daniel-range-final.yml
+
+# -----------------------------------------------------------------------------
+# Binaries and anything that gets fetched fresh at provision time -- git
+# handles these as opaque blobs (no diffs, repo bloats every revision), and
+# some of it is sensitive offensive tooling that shouldn't sit in history.
+# -----------------------------------------------------------------------------
+CVEs/
+*.zip
+*.enc
+/opt/vulhub/
+
+# -----------------------------------------------------------------------------
+# Secrets -- never belong in git, even as "example" values. Jenkins credential
+# store / vault / local .env is the only place these live.
+# -----------------------------------------------------------------------------
+.env
+*.pem
+*.key
+id_rsa*
+*_password.txt
+
+# -----------------------------------------------------------------------------
+# Ordinary junk
+# -----------------------------------------------------------------------------
+__pycache__/
+*.pyc
+.DS_Store
+*.swp

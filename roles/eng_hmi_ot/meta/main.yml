@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  role_name: eng_hmi_ot
+  author: daniel
+  description: Provisions OT target (eng-hmi) with PULSE stack for REDPILLS range
+  min_ansible_version: "2.10"
+dependencies: []
