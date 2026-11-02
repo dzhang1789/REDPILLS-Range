@@ -1,47 +1,31 @@
-Deploying the GOAD Range
+Full sequence to rebuild the `GOAD` range for `REDPILLS-range`.
 
-Full sequence to rebuild the `GOAD` range from `REDPILLS-range`.
+Currently the Range is managed through Jenkins externally. This is accessible through the ranger VM.
+On the Jenkins website, there are pipelines built that manage range deployment, agent runs and artifact collection.
+Below details each pipeline and how they work.
 
-### 1. Generate the topology
-cd ~/REDPILLS-range
-bailey gen \
-  --spec goad-daniel.bailey.spec.yml \
-  --catalog goad-daniel.bailey.catalog.yml \
-  --seed 20260911 > artifacts/topology.20260911.yml
+### REDPILLS-RESET
+This pipeline is responsible for tearing down the range and building a new deployment. Through the usage of `Bailey`,
+a completely new topology will be built based off a spec and catalog file. This deployment takes around 2-3 hours
+thus it is best to run in downtimes when no testing needs to be done. After the pipeline runs, the build will contain
+the files from the deployment. These include deployment logs and errors that may have arose during deployment along with
+config and topology information.
 
-### 2. Render the provisioning config
-bailey render \
-  --from artifacts/topology.20260911.yml \
-  --catalog goad-daniel.bailey.catalog.yml \
-  --mode provisioning \
-  --out artifacts/
+To note, sometimes due to stalling or issues with reaching the LUDUS API, errors may occur during range deployment. Please
+double check the error logs. In general though, this build should be stable and range resets should have no issue.
 
-### 3. Push config and redeploy (1-2+ hours)
-ludus range config set -r GOAD -f artifacts/range-config.provisioning.yml
-ludus range rm -r GOAD
-ludus range deploy -r GOAD
-ludus range logs -f -r GOAD
+### REDPILLS-create-snapshot
+After a reset of the range, use this pipeline to create a snapshot of the range. It will prompt for a name for the snapshot and
+a potential description. This snapshot will be used to rollback to the current topology in the next step.
 
-### 4. Post-deploy setup (not captured in the base spec — must be redone after every reset)
+### REDPILLS-episode
+This pipeline is responsible for the majority of the pipeline. Before running, it will prompt for a snapshot and potentially a seed.
+The snapshot is optional and can be skipped if `SKIP_SNAPSHOT_REVERT` is checked. If loading from a snapshot, the Range will revert
+to what it looks like right after being reset.
 
-**SSH + domain admin on dragonstone:**
-ansible-playbook -i shared-goad-inventory.ini leg_ssh_setup.yml -f 1
+From here, the pipeline will run `scenario_gen.py` on the topology and randomly generate CVEs and Flags onto hosts. This will sometime error out
+due to stalling but should be stable on current range topologies, so rerun the pipeline if it fails.
 
-**Fix kali's DNS:**
-ssh kali@10.25.10.18
-echo "nameserver 10.25.10.12" | sudo tee /etc/resolv.conf
-
-**Deploy the phishing poller :**
-ansible-playbook -i shared-goad-inventory.ini phishing_poller_setup.yml -f 1
-
-### Optional: reset flags/CVEs via scenario_gen.py
-python3 scenario_gen.py \
-  artifacts/range-config.provisioning.yml \
-  --seed 1234 \
-  --range-prefix 10.25 \
-  --percent 50 \
-  --vulns-per-host 1
-  
-Then run the generated `scenario.yml` 
-OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES \
-ansible-playbook -i scenario-inventory.ini scenario.yml -f 1
+After this, the pipeline will then pull the REDPILLS agent run it against the range by moving it to the kali box. After this step is completed, 
+all the artifacts regarding the run, such as the episode directory, artifacts from hosts, and files documenting the state of the range will be
+stored on the build under the artifacts and can be downloaded.
