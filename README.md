@@ -19,7 +19,7 @@ After a reset of the range, use this pipeline to create a snapshot of the range.
 a potential description. This snapshot will be used to rollback to the current topology in the next step.
 
 ### REDPILLS-episode
-This pipeline is responsible for the majority of the pipeline. Before running, it will prompt for a snapshot and potentially a seed.
+This pipeline is responsible for the majority of the agent workflow. Before running, it will prompt for a snapshot and potentially a seed.
 The snapshot is optional and can be skipped if `SKIP_SNAPSHOT_REVERT` is checked. If loading from a snapshot, the Range will revert
 to what it looks like right after being reset.
 
